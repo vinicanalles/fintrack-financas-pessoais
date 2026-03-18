@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user-specific settings and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "currency": { "type": "string", "description": "Preferred currency symbol" }
+      },
+      "required": ["uid", "firstName", "email"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Represents an income or expense entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["income", "expense"] },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "month": { "type": "string", "description": "YYYY-MM format for filtering" }
+      },
+      "required": ["uid", "amount", "type", "date", "month"]
+    },
+    "Goal": {
+      "title": "Goal",
+      "description": "Monthly financial goals.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "title": { "type": "string" },
+        "targetAmount": { "type": "number" },
+        "currentAmount": { "type": "number" },
+        "month": { "type": "string", "description": "YYYY-MM format" },
+        "category": { "type": "string" }
+      },
+      "required": ["uid", "title", "targetAmount", "month"]
+    },
+    "Reminder": {
+      "title": "Reminder",
+      "description": "Upcoming payment reminders.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "title": { "type": "string" },
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string", "format": "date-time" },
+        "isPaid": { "type": "boolean" }
+      },
+      "required": ["uid", "title", "dueDate"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notifications for the user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["reminder", "goal", "system"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isRead": { "type": "boolean" },
+        "relatedId": { "type": "string", "description": "ID of the reminder or goal related to this notification" }
+      },
+      "required": ["uid", "title", "message", "createdAt", "isRead"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document"
+    },
+    "/transactions": {
+      "schema": "Transaction",
+      "description": "Global transactions collection (filtered by uid)"
+    },
+    "/goals": {
+      "schema": "Goal",
+      "description": "Global goals collection (filtered by uid)"
+    },
+    "/reminders": {
+      "schema": "Reminder",
+      "description": "Global reminders collection (filtered by uid)"
+    },
+    "/notifications": {
+      "schema": "Notification",
+      "description": "Global notifications collection (filtered by uid)"
+    }
+  }
+}

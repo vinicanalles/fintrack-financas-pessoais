@@ -1,0 +1,194 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - firstName: string (required, 1-50 chars)
+    //   - lastName: string (optional, 0-50 chars)
+    //   - email: string (required, valid format)
+    //   - phone: string (optional, 0-20 chars)
+    //   - photoURL: string (optional, valid URL)
+    //   - currency: string (optional, 1-10 chars)
+    //   - role: string (optional, 'admin' | 'user')
+    //
+    // Collection: transactions
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - amount: number (required, positive)
+    //   - type: string (required, 'income' | 'expense')
+    //   - category: string (required, 1-50 chars)
+    //   - description: string (optional, 0-200 chars)
+    //   - date: string (required, ISO 8601)
+    //   - month: string (required, YYYY-MM)
+    //
+    // Collection: goals
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - title: string (required, 1-100 chars)
+    //   - targetAmount: number (required, positive)
+    //   - currentAmount: number (optional, positive)
+    //   - month: string (required, YYYY-MM)
+    //   - category: string (optional, 0-50 chars)
+    //
+    // Collection: reminders
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - title: string (required, 1-100 chars)
+    //   - amount: number (required, positive)
+    //   - dueDate: string (required, ISO 8601)
+    //   - isPaid: bool (required)
+    //
+    // Collection: notifications
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - title: string (required, 1-100 chars)
+    //   - message: string (required, 1-500 chars)
+    //   - type: string (required, 'reminder' | 'goal' | 'system')
+    //   - createdAt: string (required, ISO 8601)
+    //   - isRead: bool (required)
+    //   - relatedId: string (optional, 0-100 chars)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' || 
+         (request.auth.token.email == "vinicanalles@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidMonthString(monthStr) {
+      return monthStr is string && monthStr.matches("^\\d{4}-\\d{2}$");
+    }
+
+    // Domain Validators
+    function isValidUser(data) {
+      return data.keys().hasOnly(['uid', 'firstName', 'lastName', 'email', 'phone', 'photoURL', 'currency', 'role']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.firstName is string && data.firstName.size() > 0 && data.firstName.size() <= 50 &&
+             (!('lastName' in data) || (data.lastName is string && data.lastName.size() <= 50)) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1000)) &&
+             (!('currency' in data) || (data.currency is string && data.currency.size() <= 10)) &&
+             (!('role' in data) || data.role in ['admin', 'user']);
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasOnly(['uid', 'amount', 'type', 'category', 'description', 'date', 'month']) &&
+             data.uid == request.auth.uid &&
+             data.amount is number && data.amount >= 0 &&
+             data.type in ['income', 'expense'] &&
+             data.category is string && data.category.size() > 0 && data.category.size() <= 50 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 200)) &&
+             isValidDateString(data.date) &&
+             isValidMonthString(data.month);
+    }
+
+    function isValidGoal(data) {
+      return data.keys().hasOnly(['uid', 'title', 'targetAmount', 'currentAmount', 'month', 'category']) &&
+             data.uid == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
+             data.targetAmount is number && data.targetAmount >= 0 &&
+             (!('currentAmount' in data) || (data.currentAmount is number && data.currentAmount >= 0)) &&
+             isValidMonthString(data.month) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 50));
+    }
+
+    function isValidReminder(data) {
+      return data.keys().hasOnly(['uid', 'title', 'amount', 'dueDate', 'isPaid']) &&
+             data.uid == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
+             data.amount is number && data.amount >= 0 &&
+             isValidDateString(data.dueDate) &&
+             data.isPaid is bool;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasOnly(['uid', 'title', 'message', 'type', 'createdAt', 'isRead', 'relatedId']) &&
+             data.uid == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
+             data.message is string && data.message.size() > 0 && data.message.size() <= 500 &&
+             data.type in ['reminder', 'goal', 'system'] &&
+             isValidDateString(data.createdAt) &&
+             data.isRead is bool &&
+             (!('relatedId' in data) || (data.relatedId is string && data.relatedId.size() <= 100));
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (!('role' in request.resource.data) || request.resource.data.role == 'user' || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /transactions/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      allow update: if (isDocOwner() && isValidTransaction(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /goals/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidGoal(request.resource.data);
+      allow update: if (isDocOwner() && isValidGoal(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /reminders/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidReminder(request.resource.data);
+      allow update: if (isDocOwner() && isValidReminder(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /notifications/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
+      allow update: if (isDocOwner() && isValidNotification(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+    
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}
