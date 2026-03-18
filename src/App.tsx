@@ -93,8 +93,6 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [showInstallBanner, setShowInstallBanner] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
       return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
@@ -130,33 +128,6 @@ export default function App() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-      setShowInstallBanner(true);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    };
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      console.log('User accepted the install prompt');
-    } else {
-      console.log('User dismissed the install prompt');
-    }
-    setDeferredPrompt(null);
-    setShowInstallBanner(false);
-  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -462,21 +433,6 @@ export default function App() {
                   active={activeTab === 'reminders'} 
                   onClick={() => { setActiveTab('reminders'); setIsMobileMenuOpen(false); }} 
                 />
-                
-                {showInstallBanner && (
-                  <button 
-                    onClick={handleInstallClick}
-                    className="mt-4 mx-2 flex items-center gap-3 px-4 py-3 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100 hover:bg-emerald-100 transition-all group"
-                  >
-                    <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
-                      <Plus className="w-5 h-5 text-white" />
-                    </div>
-                    <div className="flex flex-col items-start">
-                      <span className="text-sm font-bold">Instalar App</span>
-                      <span className="text-[10px] opacity-70">Acesso rápido na tela inicial</span>
-                    </div>
-                  </button>
-                )}
               </nav>
 
             <div className="pt-6 border-t border-stone-100 dark:border-stone-800">
@@ -527,29 +483,6 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 p-4 md:p-8 overflow-y-auto h-[calc(100vh-73px)] md:h-screen">
-        {showInstallBanner && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-6 p-4 bg-emerald-600 text-white rounded-2xl shadow-lg flex items-center justify-between gap-4"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-                <Smartphone className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <h3 className="font-bold text-sm">Instalar FinTrack</h3>
-                <p className="text-xs text-emerald-50/80">Acesse suas finanças direto da tela inicial!</p>
-              </div>
-            </div>
-            <button 
-              onClick={handleInstallClick}
-              className="px-4 py-2 bg-white text-emerald-700 text-xs font-bold rounded-xl hover:bg-emerald-50 transition-colors whitespace-nowrap"
-            >
-              Instalar Agora
-            </button>
-          </motion.div>
-        )}
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
             <Dashboard 
@@ -1333,7 +1266,7 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
       setFormData({
-        amount: '',
+        amount: 0,
         type: 'expense',
         category: '',
         description: '',
@@ -1927,7 +1860,7 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
       }
       setIsModalOpen(false);
       setEditingId(null);
-      setFormData({ title: '', amount: '', dueDate: format(new Date(), 'yyyy-MM-dd') });
+      setFormData({ title: '', amount: 0, dueDate: format(new Date(), 'yyyy-MM-dd') });
     } catch (error) {
       console.error('Error saving reminder:', error);
     }
