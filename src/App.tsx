@@ -125,6 +125,7 @@ export default function App() {
   }, [isMobileMenuOpen, isNotificationPanelOpen]);
   
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loadingTransactions, setLoadingTransactions] = useState(true);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -162,7 +163,11 @@ export default function App() {
     const unsubTransactions = onSnapshot(qTransactions, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
       setTransactions(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'transactions'));
+      setLoadingTransactions(false);
+    }, (error) => {
+      setLoadingTransactions(false);
+      handleFirestoreError(error, OperationType.LIST, 'transactions');
+    });
 
     const qGoals = query(collection(db, 'goals'), where('uid', '==', user.uid));
     const unsubGoals = onSnapshot(qGoals, (snapshot) => {
@@ -494,7 +499,7 @@ export default function App() {
             />
           )}
           {activeTab === 'transactions' && (
-            <Transactions transactions={transactions} user={user} />
+            <Transactions transactions={transactions} user={user} isLoading={loadingTransactions} />
           )}
           {activeTab === 'goals' && (
             <Goals goals={goals} user={user} />
@@ -524,7 +529,9 @@ function Login({ onLoginSuccess }: { onLoginSuccess: () => void }) {
       await signInWithPopup(auth, googleProvider);
       onLoginSuccess();
     } catch (err: any) {
-      setError(err.message);
+      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -819,6 +826,7 @@ function ProfileSetup({ user, onComplete, initialProfile, onCancel }: {
               <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase">Nome *</label>
               <input 
                 type="text" 
+                maxLength={50}
                 required 
                 value={formData.firstName}
                 onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
@@ -830,6 +838,7 @@ function ProfileSetup({ user, onComplete, initialProfile, onCancel }: {
               <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase">Sobrenome</label>
               <input 
                 type="text" 
+                maxLength={50}
                 value={formData.lastName}
                 onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
                 className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" 
@@ -1199,9 +1208,56 @@ function StatCard({ title, value, icon, color, trend }: { title: string, value: 
   );
 }
 
-function Transactions({ transactions, user }: { transactions: Transaction[], user: User }) {
+function ConfirmDialog({ 
+  isOpen, 
+  title, 
+  message, 
+  onConfirm, 
+  onCancel 
+}: { 
+  isOpen: boolean; 
+  title: string; 
+  message: string; 
+  onConfirm: () => void; 
+  onCancel: () => void; 
+}) {
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="bg-white dark:bg-stone-900 w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden transition-colors p-6"
+          >
+            <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50 mb-2">{title}</h3>
+            <p className="text-stone-500 dark:text-stone-400 mb-6">{message}</p>
+            <div className="flex gap-3">
+              <button 
+                onClick={onCancel}
+                className="flex-1 py-3 px-4 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 font-bold rounded-xl transition-all"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={onConfirm}
+                className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-red-100 dark:shadow-none"
+              >
+                Excluir
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function Transactions({ transactions, user, isLoading }: { transactions: Transaction[], user: User, isLoading?: boolean }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -1277,9 +1333,11 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
     }
   };
 
-  const deleteTransaction = async (id: string) => {
+  const deleteTransaction = async () => {
+    if (!itemToDelete) return;
     try {
-      await deleteDoc(doc(db, 'transactions', id));
+      await deleteDoc(doc(db, 'transactions', itemToDelete));
+      setItemToDelete(null);
     } catch (error) {
       console.error('Error deleting transaction:', error);
     }
@@ -1300,6 +1358,14 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
       exit={{ opacity: 0, y: -10 }}
       className="space-y-8"
     >
+      <ConfirmDialog 
+        isOpen={!!itemToDelete}
+        title="Excluir Transação"
+        message="Tem certeza que deseja excluir esta transação? Esta ação não pode ser desfeita."
+        onConfirm={deleteTransaction}
+        onCancel={() => setItemToDelete(null)}
+      />
+
       <AnimatePresence>
         {showSuccess && (
           <motion.div 
@@ -1377,15 +1443,36 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
             </thead>
             <tbody className="divide-y divide-stone-100 dark:divide-stone-800">
               <AnimatePresence initial={false}>
-                {filteredTransactions.map((t) => (
-                  <motion.tr 
-                    key={t.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 20 }}
-                    layout
-                    className="hover:bg-stone-50/50 dark:hover:bg-stone-800/50 transition-colors"
-                  >
+                {isLoading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={`skeleton-${i}`} className="animate-pulse hover:bg-stone-50/50 dark:hover:bg-stone-800/50 transition-colors">
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-stone-200 dark:bg-stone-700 rounded w-24"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-stone-200 dark:bg-stone-700 rounded w-48"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-6 bg-stone-200 dark:bg-stone-700 rounded-full w-20"></div>
+                      </td>
+                      <td className="px-6 py-4 flex justify-end">
+                        <div className="h-4 bg-stone-200 dark:bg-stone-700 rounded w-24"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-8 bg-stone-200 dark:bg-stone-700 rounded-xl w-20 mx-auto"></div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  filteredTransactions.map((t) => (
+                    <motion.tr 
+                      key={t.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20 }}
+                      layout
+                      className="hover:bg-stone-50/50 dark:hover:bg-stone-800/50 transition-colors"
+                    >
                     <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400">
                       {format(parseISO(t.date), 'dd/MM/yyyy')}
                     </td>
@@ -1413,7 +1500,7 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button 
-                          onClick={() => t.id && deleteTransaction(t.id)} 
+                          onClick={() => t.id && setItemToDelete(t.id)} 
                           className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
                           title="Excluir"
                         >
@@ -1422,9 +1509,10 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
                       </div>
                     </td>
                   </motion.tr>
-                ))}
+                ))
+                )}
               </AnimatePresence>
-              {filteredTransactions.length === 0 && (
+              {!isLoading && filteredTransactions.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic">
                     {transactions.length === 0 
@@ -1497,7 +1585,7 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Descrição</label>
-                  <input type="text" value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none dark:text-stone-50" placeholder="Ex: Aluguel, Supermercado..." />
+                  <input type="text" maxLength={200} value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none dark:text-stone-50" placeholder="Ex: Aluguel, Supermercado..." />
                 </div>
                 <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-emerald-100 dark:shadow-none mt-4">
                   {editingId ? 'Salvar Alterações' : 'Salvar Transação'}
@@ -1514,6 +1602,7 @@ function Transactions({ transactions, user }: { transactions: Transaction[], use
 function Goals({ goals, user }: { goals: Goal[], user: User }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     title: '',
     targetAmount: 0,
@@ -1587,9 +1676,11 @@ function Goals({ goals, user }: { goals: Goal[], user: User }) {
     }
   };
 
-  const deleteGoal = async (id: string) => {
+  const deleteGoal = async () => {
+    if (!itemToDelete) return;
     try {
-      await deleteDoc(doc(db, 'goals', id));
+      await deleteDoc(doc(db, 'goals', itemToDelete));
+      setItemToDelete(null);
     } catch (error) {
       console.error('Error deleting goal:', error);
     }
@@ -1597,6 +1688,13 @@ function Goals({ goals, user }: { goals: Goal[], user: User }) {
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-8">
+      <ConfirmDialog 
+        isOpen={!!itemToDelete}
+        title="Excluir Meta"
+        message="Tem certeza que deseja excluir esta meta? Esta ação não pode ser desfeita."
+        onConfirm={deleteGoal}
+        onCancel={() => setItemToDelete(null)}
+      />
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-stone-900 dark:text-stone-50">Metas Mensais</h2>
@@ -1626,7 +1724,7 @@ function Goals({ goals, user }: { goals: Goal[], user: User }) {
                     <Pencil className="w-4 h-4" />
                   </button>
                   <button 
-                    onClick={() => goal.id && deleteGoal(goal.id)} 
+                    onClick={() => goal.id && setItemToDelete(goal.id)} 
                     className="p-2 text-stone-300 dark:text-stone-600 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
                     title="Excluir"
                   >
@@ -1682,7 +1780,7 @@ function Goals({ goals, user }: { goals: Goal[], user: User }) {
               <form onSubmit={handleSubmit} className="p-6 space-y-4">
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Título da Meta</label>
-                  <input type="text" required value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none dark:text-stone-50" placeholder="Ex: Reserva de Emergência" />
+                  <input type="text" maxLength={100} required value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none dark:text-stone-50" placeholder="Ex: Reserva de Emergência" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
@@ -1823,6 +1921,7 @@ function NotificationPanel({
 function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [formData, setFormData] = useState({ title: '', amount: 0, dueDate: format(new Date(), 'yyyy-MM-dd') });
 
   const handleOpenModal = (reminder?: Reminder) => {
@@ -1875,9 +1974,11 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
     }
   };
 
-  const deleteReminder = async (id: string) => {
+  const deleteReminder = async () => {
+    if (!itemToDelete) return;
     try {
-      await deleteDoc(doc(db, 'reminders', id));
+      await deleteDoc(doc(db, 'reminders', itemToDelete));
+      setItemToDelete(null);
     } catch (error) {
       console.error('Error deleting reminder:', error);
     }
@@ -1885,6 +1986,13 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-8">
+      <ConfirmDialog 
+        isOpen={!!itemToDelete}
+        title="Excluir Lembrete"
+        message="Tem certeza que deseja excluir este lembrete? Esta ação não pode ser desfeita."
+        onConfirm={deleteReminder}
+        onCancel={() => setItemToDelete(null)}
+      />
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-stone-900 dark:text-stone-50">Lembretes</h2>
@@ -1935,7 +2043,7 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
                   <Pencil className="w-5 h-5" />
                 </button>
                 <button 
-                  onClick={() => reminder.id && deleteReminder(reminder.id)} 
+                  onClick={() => reminder.id && setItemToDelete(reminder.id)} 
                   className="p-2 text-stone-300 dark:text-stone-600 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
                   title="Excluir"
                 >
@@ -1963,7 +2071,7 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
               <form onSubmit={handleSubmit} className="p-6 space-y-4">
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Título da Conta</label>
-                  <input type="text" required value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" placeholder="Ex: Conta de Luz" />
+                  <input type="text" maxLength={100} required value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" placeholder="Ex: Conta de Luz" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Valor</label>
