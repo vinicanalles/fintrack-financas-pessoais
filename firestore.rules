@@ -45,6 +45,14 @@ service cloud.firestore {
     //   - dueDate: string (required, ISO 8601)
     //   - isPaid: bool (required)
     //
+    // Collection: assets
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - ticker: string (required, 1-20 chars)
+    //   - quantity: number (required, positive)
+    //   - averagePrice: number (optional, positive)
+    //   - type: string (required, 'Ação' | 'FII' | 'Renda Fixa' | 'Cripto' | 'Outros')
+    //
     // Collection: notifications
     // Fields:
     //   - uid: string (required, immutable)
@@ -54,6 +62,16 @@ service cloud.firestore {
     //   - createdAt: string (required, ISO 8601)
     //   - isRead: bool (required)
     //   - relatedId: string (optional, 0-100 chars)
+    //
+    // Collection: dividends
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - ticker: string (required, 1-20 chars)
+    //   - date: string (required, ISO 8601)
+    //   - month: string (required, YYYY-MM)
+    //   - quantity: number (required, positive)
+    //   - valuePerShare: number (required, positive or zero)
+    //   - total: number (required, positive or zero)
     //
     // ===============================================================
 
@@ -139,6 +157,15 @@ service cloud.firestore {
              data.isPaid is bool;
     }
 
+    function isValidAsset(data) {
+      return data.keys().hasOnly(['uid', 'ticker', 'quantity', 'averagePrice', 'type']) &&
+             data.uid == request.auth.uid &&
+             data.ticker is string && data.ticker.size() > 0 && data.ticker.size() <= 20 &&
+             data.quantity is number && data.quantity >= 0 &&
+             (!('averagePrice' in data) || (data.averagePrice is number && data.averagePrice >= 0)) &&
+             data.type in ['Ação', 'FII', 'Renda Fixa', 'Cripto', 'Outros'];
+    }
+
     function isValidNotification(data) {
       return data.keys().hasOnly(['uid', 'title', 'message', 'type', 'createdAt', 'isRead', 'relatedId']) &&
              data.uid == request.auth.uid &&
@@ -148,6 +175,17 @@ service cloud.firestore {
              isValidDateString(data.createdAt) &&
              data.isRead is bool &&
              (!('relatedId' in data) || (data.relatedId is string && data.relatedId.size() <= 100));
+    }
+
+    function isValidDividend(data) {
+      return data.keys().hasOnly(['uid', 'ticker', 'date', 'month', 'quantity', 'valuePerShare', 'total']) &&
+             data.uid == request.auth.uid &&
+             data.ticker is string && data.ticker.size() > 0 && data.ticker.size() <= 20 &&
+             isValidDateString(data.date) &&
+             isValidMonthString(data.month) &&
+             data.quantity is number && data.quantity >= 0 &&
+             data.valuePerShare is number && data.valuePerShare >= 0 &&
+             data.total is number && data.total >= 0;
     }
 
     // Rules
@@ -177,6 +215,20 @@ service cloud.firestore {
       allow read: if isDocOwner() || isAdmin();
       allow create: if isAuthenticated() && isValidReminder(request.resource.data);
       allow update: if (isDocOwner() && isValidReminder(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /assets/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidAsset(request.resource.data);
+      allow update: if (isDocOwner() && isValidAsset(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /dividends/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidDividend(request.resource.data);
+      allow update: if (isDocOwner() && isValidDividend(request.resource.data) && uidNotModified()) || isAdmin();
       allow delete: if isDocOwner() || isAdmin();
     }
 

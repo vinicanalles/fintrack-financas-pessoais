@@ -47,3 +47,23 @@ export interface Notification {
   isRead: boolean;
   relatedId?: string;
 }
+
+export interface Asset {
+  id?: string;
+  uid: string;
+  ticker: string;
+  quantity: number;
+  averagePrice?: number;
+  type: 'Ação' | 'FII' | 'Renda Fixa' | 'Cripto' | 'Outros';
+}
+
+export interface Dividend {
+  id?: string;
+  uid: string;
+  ticker: string;
+  date: string; // YYYY-MM-DD
+  month: string; // YYYY-MM
+  quantity: number;
+  valuePerShare: number;
+  total: number;
+}

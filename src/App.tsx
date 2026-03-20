@@ -1,4 +1,5 @@
 import React, { useState, useEffect, Component } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -70,7 +71,7 @@ import { format, parseISO, isBefore } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { cn, formatCurrency } from './lib/utils';
 import { CurrencyInput } from './components/CurrencyInput';
-import { Transaction, Goal, Reminder, UserProfile, Notification as AppNotification } from './types';
+import { Transaction, Goal, Reminder, UserProfile, Notification as AppNotification, Asset, Dividend } from './types';
 
 const getInitials = (firstName?: string, lastName?: string, displayName?: string) => {
   if (firstName || lastName) {
@@ -89,7 +90,7 @@ export default function App() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkingProfile, setCheckingProfile] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'goals' | 'reminders'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'goals' | 'reminders' | 'investments'>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
@@ -129,6 +130,9 @@ export default function App() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [dividends, setDividends] = useState<Dividend[]>([]);
+  const [loadingAssets, setLoadingAssets] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -187,11 +191,29 @@ export default function App() {
       setNotifications(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'notifications'));
 
+    const qAssets = query(collection(db, 'assets'), where('uid', '==', user.uid));
+    const unsubAssets = onSnapshot(qAssets, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Asset));
+      setAssets(data);
+      setLoadingAssets(false);
+    }, (error) => {
+      setLoadingAssets(false);
+      handleFirestoreError(error, OperationType.LIST, 'assets');
+    });
+
+    const qDividends = query(collection(db, 'dividends'), where('uid', '==', user.uid));
+    const unsubDividends = onSnapshot(qDividends, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Dividend));
+      setDividends(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'dividends'));
+
     return () => {
       unsubTransactions();
       unsubGoals();
       unsubReminders();
       unsubNotifications();
+      unsubAssets();
+      unsubDividends();
     };
   }, [user]);
 
@@ -438,6 +460,12 @@ export default function App() {
                   active={activeTab === 'reminders'} 
                   onClick={() => { setActiveTab('reminders'); setIsMobileMenuOpen(false); }} 
                 />
+                <NavItem 
+                  icon={<TrendingUp className="w-5 h-5" />} 
+                  label="Investimentos" 
+                  active={activeTab === 'investments'} 
+                  onClick={() => { setActiveTab('investments'); setIsMobileMenuOpen(false); }} 
+                />
               </nav>
 
             <div className="pt-6 border-t border-stone-100 dark:border-stone-800">
@@ -494,6 +522,7 @@ export default function App() {
               transactions={transactions} 
               goals={goals} 
               reminders={reminders} 
+              dividends={dividends}
               onNavigate={(tab) => setActiveTab(tab)}
               theme={theme}
             />
@@ -506,6 +535,9 @@ export default function App() {
           )}
           {activeTab === 'reminders' && (
             <Reminders reminders={reminders} user={user} />
+          )}
+          {activeTab === 'investments' && (
+            <Investments assets={assets} dividends={dividends} user={user} isLoading={loadingAssets} />
           )}
         </AnimatePresence>
       </main>
@@ -902,18 +934,22 @@ function NavItem({ icon, label, active, onClick }: { icon: React.ReactNode, labe
   );
 }
 
-function Dashboard({ transactions, goals, reminders, onNavigate, theme }: { transactions: Transaction[], goals: Goal[], reminders: Reminder[], onNavigate: (tab: any) => void, theme: 'light' | 'dark' }) {
+function Dashboard({ transactions, goals, reminders, dividends, onNavigate, theme }: { transactions: Transaction[], goals: Goal[], reminders: Reminder[], dividends: Dividend[], onNavigate: (tab: any) => void, theme: 'light' | 'dark' }) {
   const currentMonth = format(new Date(), 'yyyy-MM');
   const monthTransactions = transactions.filter(t => t.month === currentMonth);
+  const monthDividends = dividends.filter(d => d.month === currentMonth);
   
-  const totalIncome = monthTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+  const incomeTransactions = monthTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+  const totalDividends = monthDividends.reduce((acc, d) => acc + d.total, 0);
+  const totalIncome = incomeTransactions + totalDividends;
   const totalExpenses = monthTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
   const balance = totalIncome - totalExpenses;
 
   const chartData = [
-    { name: 'Entradas', value: totalIncome, color: '#10b981' },
+    { name: 'Entradas', value: incomeTransactions, color: '#10b981' },
+    { name: 'Dividendos', value: totalDividends, color: '#8b5cf6' },
     { name: 'Saídas', value: totalExpenses, color: '#ef4444' }
-  ];
+  ].filter(item => item.value > 0);
 
   const categoryData = Object.entries(
     monthTransactions
@@ -938,10 +974,11 @@ function Dashboard({ transactions, goals, reminders, onNavigate, theme }: { tran
         <p className="text-stone-500 dark:text-stone-400">Resumo financeiro de {format(new Date(), 'MMMM yyyy', { locale: ptBR })}</p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Saldo Atual" value={balance} icon={<Wallet className="w-6 h-6" />} color="emerald" trend={balance >= 0 ? 'up' : 'down'} />
         <StatCard title="Total Entradas" value={totalIncome} icon={<TrendingUp className="w-6 h-6" />} color="blue" />
         <StatCard title="Total Saídas" value={totalExpenses} icon={<TrendingDown className="w-6 h-6" />} color="red" />
+        <StatCard title="Dividendos" value={totalDividends} icon={<TrendingUp className="w-6 h-6" />} color="violet" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -1181,11 +1218,12 @@ function Dashboard({ transactions, goals, reminders, onNavigate, theme }: { tran
   );
 }
 
-function StatCard({ title, value, icon, color, trend }: { title: string, value: number, icon: React.ReactNode, color: 'emerald' | 'blue' | 'red', trend?: 'up' | 'down' }) {
+function StatCard({ title, value, icon, color, trend }: { title: string, value: number, icon: React.ReactNode, color: 'emerald' | 'blue' | 'red' | 'violet', trend?: 'up' | 'down' }) {
   const colorClasses = {
     emerald: "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400",
     blue: "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400",
-    red: "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400"
+    red: "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400",
+    violet: "bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-400"
   };
 
   return (
@@ -1221,10 +1259,12 @@ function ConfirmDialog({
   onConfirm: () => void; 
   onCancel: () => void; 
 }) {
-  return (
+  if (typeof document === 'undefined') return null;
+  
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -1250,7 +1290,8 @@ function ConfirmDialog({
           </motion.div>
         </div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
 
@@ -2087,6 +2128,488 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
                 </div>
                 <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-emerald-100 dark:shadow-none mt-4">
                   {editingId ? 'Salvar Alterações' : 'Criar Lembrete'}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], dividends: Dividend[], user: User, isLoading?: boolean }) {
+  const [activeSubTab, setActiveSubTab] = useState<'portfolio' | 'dividends'>('dividends');
+  const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
+
+  // Asset State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
+  const [formData, setFormData] = useState({
+    ticker: '',
+    quantity: 0,
+    averagePrice: 0,
+    type: 'Ação' as Asset['type']
+  });
+
+  // Dividend State
+  const [isDividendModalOpen, setIsDividendModalOpen] = useState(false);
+  const [dividendEditingId, setDividendEditingId] = useState<string | null>(null);
+  const [dividendItemToDelete, setDividendItemToDelete] = useState<string | null>(null);
+  const [dividendFormData, setDividendFormData] = useState({
+    ticker: '',
+    date: format(new Date(), 'yyyy-MM-dd'),
+    quantity: 0,
+    valuePerShare: 0
+  });
+
+  const types: Asset['type'][] = ['Ação', 'FII', 'Renda Fixa', 'Cripto', 'Outros'];
+
+  const handleOpenDividendModal = (dividend?: Dividend) => {
+    if (dividend) {
+      setDividendEditingId(dividend.id || null);
+      setDividendFormData({
+        ticker: dividend.ticker,
+        date: dividend.date,
+        quantity: dividend.quantity,
+        valuePerShare: dividend.valuePerShare
+      });
+    } else {
+      setDividendEditingId(null);
+      setDividendFormData({
+        ticker: '',
+        date: format(new Date(), 'yyyy-MM-dd'),
+        quantity: 0,
+        valuePerShare: 0
+      });
+    }
+    setIsDividendModalOpen(true);
+  };
+
+  const handleDividendSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dividendFormData.ticker || dividendFormData.quantity <= 0) return;
+
+    const dividendData: Omit<Dividend, 'id'> = {
+      uid: user.uid,
+      ticker: dividendFormData.ticker.toUpperCase(),
+      date: dividendFormData.date,
+      month: format(parseISO(dividendFormData.date), 'yyyy-MM'),
+      quantity: dividendFormData.quantity,
+      valuePerShare: dividendFormData.valuePerShare,
+      total: dividendFormData.quantity * dividendFormData.valuePerShare
+    };
+
+    try {
+      if (dividendEditingId) {
+        await updateDoc(doc(db, 'dividends', dividendEditingId), dividendData);
+      } else {
+        await addDoc(collection(db, 'dividends'), dividendData);
+      }
+      setIsDividendModalOpen(false);
+      setDividendEditingId(null);
+    } catch (error) {
+      console.error('Error saving dividend:', error);
+    }
+  };
+
+  const deleteDividend = async () => {
+    if (!dividendItemToDelete) return;
+    try {
+      await deleteDoc(doc(db, 'dividends', dividendItemToDelete));
+      setDividendItemToDelete(null);
+    } catch (error) {
+      console.error('Error deleting dividend:', error);
+    }
+  };
+
+  const handleOpenModal = (asset?: Asset) => {
+    if (asset) {
+      setEditingId(asset.id || null);
+      setFormData({
+        ticker: asset.ticker,
+        quantity: asset.quantity,
+        averagePrice: asset.averagePrice || 0,
+        type: asset.type
+      });
+    } else {
+      setEditingId(null);
+      setFormData({
+        ticker: '',
+        quantity: 0,
+        averagePrice: 0,
+        type: 'Ação'
+      });
+    }
+    setIsModalOpen(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.ticker || formData.quantity <= 0) return;
+
+    const assetData: Omit<Asset, 'id'> = {
+      uid: user.uid,
+      ticker: formData.ticker.toUpperCase(),
+      quantity: formData.quantity,
+      averagePrice: formData.averagePrice,
+      type: formData.type
+    };
+
+    try {
+      if (editingId) {
+        await updateDoc(doc(db, 'assets', editingId), assetData);
+      } else {
+        await addDoc(collection(db, 'assets'), assetData);
+      }
+      setIsModalOpen(false);
+      setEditingId(null);
+    } catch (error) {
+      console.error('Error saving asset:', error);
+    }
+  };
+
+  const deleteAsset = async () => {
+    if (!itemToDelete) return;
+    try {
+      await deleteDoc(doc(db, 'assets', itemToDelete));
+      setItemToDelete(null);
+    } catch (error) {
+      console.error('Error deleting asset:', error);
+    }
+  };
+
+  const totalInvested = assets.reduce((acc, asset) => acc + (asset.quantity * (asset.averagePrice || 0)), 0);
+
+  const monthDividends = dividends.filter(d => d.month === selectedMonth);
+  const totalMonthDividends = monthDividends.reduce((acc, d) => acc + d.total, 0);
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-8">
+      <ConfirmDialog 
+        isOpen={!!itemToDelete}
+        title="Excluir Ativo"
+        message="Tem certeza que deseja excluir este ativo? Esta ação não pode ser desfeita."
+        onConfirm={deleteAsset}
+        onCancel={() => setItemToDelete(null)}
+      />
+      <ConfirmDialog 
+        isOpen={!!dividendItemToDelete}
+        title="Excluir Provento"
+        message="Tem certeza que deseja excluir este provento? Esta ação não pode ser desfeita."
+        onConfirm={deleteDividend}
+        onCancel={() => setDividendItemToDelete(null)}
+      />
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-stone-900 dark:text-stone-50">Investimentos</h2>
+          <p className="text-stone-500 dark:text-stone-400">Acompanhe seus ativos e dividendos</p>
+        </div>
+        <div className="flex w-full md:w-auto bg-stone-100 dark:bg-stone-800 p-1 rounded-xl">
+          <button 
+            onClick={() => setActiveSubTab('dividends')}
+            className={cn(
+              "flex-1 md:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all",
+              activeSubTab === 'dividends' ? "bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-50 shadow-sm" : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
+            )}
+          >
+            Proventos (Mensal)
+          </button>
+          <button 
+            onClick={() => setActiveSubTab('portfolio')}
+            className={cn(
+              "flex-1 md:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all",
+              activeSubTab === 'portfolio' ? "bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-50 shadow-sm" : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
+            )}
+          >
+            Minha Carteira
+          </button>
+        </div>
+      </header>
+
+      {activeSubTab === 'portfolio' ? (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
+          <div className="flex justify-end">
+            <button onClick={() => handleOpenModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
+              <Plus className="w-5 h-5" /> Novo Ativo
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
+            <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
+              <div className="flex items-center gap-4 mb-4">
+                <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center">
+                  <Wallet className="w-6 h-6" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Total Investido</p>
+                  <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">{formatCurrency(totalInvested)}</h3>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-stone-100 dark:border-stone-800">
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Tipo</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Quantidade</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Preço Médio</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {isLoading ? (
+                    Array.from({ length: 3 }).map((_, i) => (
+                      <tr key={i} className="border-b border-stone-50 dark:border-stone-800/50">
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
+                      </tr>
+                    ))
+                  ) : assets.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-stone-500 dark:text-stone-400">
+                        Nenhum ativo cadastrado.
+                      </td>
+                    </tr>
+                  ) : (
+                    assets.map((asset) => (
+                      <tr key={asset.id} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
+                        <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{asset.ticker}</td>
+                        <td className="p-4">
+                          <span className="px-2 py-1 bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 rounded-lg text-xs font-bold">
+                            {asset.type}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{asset.quantity}</td>
+                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{formatCurrency(asset.averagePrice || 0)}</td>
+                        <td className="p-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <button 
+                              onClick={() => handleOpenModal(asset)}
+                              className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
+                              title="Editar"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => asset.id && setItemToDelete(asset.id)}
+                              className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </motion.div>
+      ) : (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={() => {
+                  const d = parseISO(`${selectedMonth}-01`);
+                  d.setMonth(d.getMonth() - 1);
+                  setSelectedMonth(format(d, 'yyyy-MM'));
+                }}
+                className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <input 
+                type="month" 
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="px-4 py-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl font-bold text-stone-900 dark:text-stone-50 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <button 
+                onClick={() => {
+                  const d = parseISO(`${selectedMonth}-01`);
+                  d.setMonth(d.getMonth() + 1);
+                  setSelectedMonth(format(d, 'yyyy-MM'));
+                }}
+                className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
+              >
+                <ArrowRight className="w-5 h-5" />
+              </button>
+            </div>
+            <button onClick={() => handleOpenDividendModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
+              <Plus className="w-5 h-5" /> Novo Lançamento
+            </button>
+          </div>
+
+          <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center">
+                <Receipt className="w-6 h-6" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Total Recebido no Mês</p>
+                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(totalMonthDividends)}</h3>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-stone-100 dark:border-stone-800">
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Data</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Quantidade</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Valor/Cota</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Total</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {isLoading ? (
+                    Array.from({ length: 3 }).map((_, i) => (
+                      <tr key={i} className="border-b border-stone-50 dark:border-stone-800/50">
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
+                      </tr>
+                    ))
+                  ) : monthDividends.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="p-8 text-center text-stone-500 dark:text-stone-400">
+                        Nenhum provento lançado neste mês.
+                      </td>
+                    </tr>
+                  ) : (
+                    monthDividends.map((dividend) => (
+                      <tr key={dividend.id} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
+                        <td className="p-4 font-medium text-stone-900 dark:text-stone-50">{format(parseISO(dividend.date), 'dd/MM/yyyy')}</td>
+                        <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{dividend.ticker}</td>
+                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{dividend.quantity}</td>
+                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{formatCurrency(dividend.valuePerShare, 4)}</td>
+                        <td className="p-4 text-right font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(dividend.total)}</td>
+                        <td className="p-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <button 
+                              onClick={() => handleOpenDividendModal(dividend)}
+                              className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
+                              title="Editar"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => dividend.id && setDividendItemToDelete(dividend.id)}
+                              className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800">
+              <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
+                <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50">{editingId ? 'Editar Ativo' : 'Novo Ativo'}</h3>
+                <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-all"><X className="w-5 h-5 text-stone-500 dark:text-stone-400" /></button>
+              </div>
+              <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ticker</label>
+                  <input type="text" maxLength={10} required value={formData.ticker} onChange={(e) => setFormData({ ...formData, ticker: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50 uppercase" placeholder="Ex: PETR4" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Tipo</label>
+                  <select required value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value as Asset['type'] })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50">
+                    {types.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Quantidade</label>
+                    <input type="number" min="0" step="0.01" required value={formData.quantity || ''} onChange={(e) => setFormData({ ...formData, quantity: parseFloat(e.target.value) || 0 })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Preço Médio</label>
+                    <CurrencyInput 
+                      value={formData.averagePrice} 
+                      onChange={(val) => setFormData({ ...formData, averagePrice: val })} 
+                    />
+                  </div>
+                </div>
+                <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-emerald-100 dark:shadow-none mt-4">
+                  {editingId ? 'Salvar Alterações' : 'Adicionar Ativo'}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isDividendModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800">
+              <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
+                <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50">{dividendEditingId ? 'Editar Provento' : 'Novo Provento'}</h3>
+                <button onClick={() => setIsDividendModalOpen(false)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-all"><X className="w-5 h-5 text-stone-500 dark:text-stone-400" /></button>
+              </div>
+              <form onSubmit={handleDividendSubmit} className="p-6 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ticker</label>
+                    <input type="text" maxLength={10} required value={dividendFormData.ticker} onChange={(e) => setDividendFormData({ ...dividendFormData, ticker: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50 uppercase" placeholder="Ex: PETR4" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Data de Pagamento</label>
+                    <input type="date" required value={dividendFormData.date} onChange={(e) => setDividendFormData({ ...dividendFormData, date: e.target.value })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Quantidade</label>
+                    <input type="number" min="0" step="0.01" required value={dividendFormData.quantity || ''} onChange={(e) => setDividendFormData({ ...dividendFormData, quantity: parseFloat(e.target.value) || 0 })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Valor por Cota</label>
+                    <CurrencyInput 
+                      value={dividendFormData.valuePerShare} 
+                      onChange={(val) => setDividendFormData({ ...dividendFormData, valuePerShare: val })} 
+                      decimals={4}
+                    />
+                  </div>
+                </div>
+                <div className="pt-4 border-t border-stone-100 dark:border-stone-800 flex justify-between items-center">
+                  <span className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Total</span>
+                  <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                    {formatCurrency(dividendFormData.quantity * dividendFormData.valuePerShare)}
+                  </span>
+                </div>
+                <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-emerald-100 dark:shadow-none mt-4">
+                  {dividendEditingId ? 'Salvar Alterações' : 'Adicionar Provento'}
                 </button>
               </form>
             </motion.div>

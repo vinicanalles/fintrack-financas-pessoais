@@ -56,6 +56,19 @@
       },
       "required": ["uid", "title", "dueDate"]
     },
+    "Asset": {
+      "title": "Asset",
+      "description": "Represents an investment asset.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "ticker": { "type": "string" },
+        "quantity": { "type": "number" },
+        "averagePrice": { "type": "number" },
+        "type": { "type": "string", "enum": ["Ação", "FII", "Renda Fixa", "Cripto", "Outros"] }
+      },
+      "required": ["uid", "ticker", "quantity", "type"]
+    },
     "Notification": {
       "title": "Notification",
       "description": "In-app notifications for the user.",
@@ -70,6 +83,21 @@
         "relatedId": { "type": "string", "description": "ID of the reminder or goal related to this notification" }
       },
       "required": ["uid", "title", "message", "createdAt", "isRead"]
+    },
+    "Dividend": {
+      "title": "Dividend",
+      "description": "Represents a dividend or yield payment for a specific month.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "ticker": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "month": { "type": "string", "description": "YYYY-MM format for filtering" },
+        "quantity": { "type": "number" },
+        "valuePerShare": { "type": "number" },
+        "total": { "type": "number" }
+      },
+      "required": ["uid", "ticker", "date", "month", "quantity", "valuePerShare", "total"]
     }
   },
   "firestore": {
@@ -88,6 +116,14 @@
     "/reminders": {
       "schema": "Reminder",
       "description": "Global reminders collection (filtered by uid)"
+    },
+    "/assets": {
+      "schema": "Asset",
+      "description": "Global assets collection (filtered by uid)"
+    },
+    "/dividends": {
+      "schema": "Dividend",
+      "description": "Global dividends collection (filtered by uid)"
     },
     "/notifications": {
       "schema": "Notification",
