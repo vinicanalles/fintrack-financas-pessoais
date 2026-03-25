@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Component } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Component } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   onAuthStateChanged, 
@@ -51,9 +51,14 @@ import {
   Camera,
   Smartphone,
   Sun,
-  Moon
+  Moon,
+  FileUp,
+  FileSpreadsheet,
+  Newspaper,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Type } from '@google/genai';
 import { 
   BarChart, 
   Bar, 
@@ -72,6 +77,8 @@ import { ptBR } from 'date-fns/locale';
 import { cn, formatCurrency } from './lib/utils';
 import { CurrencyInput } from './components/CurrencyInput';
 import { Transaction, Goal, Reminder, UserProfile, Notification as AppNotification, Asset, Dividend } from './types';
+import { ImportExport } from './components/ImportExport';
+import { NewsCarousel } from './components/NewsCarousel';
 
 const getInitials = (firstName?: string, lastName?: string, displayName?: string) => {
   if (firstName || lastName) {
@@ -90,7 +97,7 @@ export default function App() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkingProfile, setCheckingProfile] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'goals' | 'reminders' | 'investments'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'goals' | 'reminders' | 'investments' | 'import'>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
@@ -133,11 +140,19 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [dividends, setDividends] = useState<Dividend[]>([]);
   const [loadingAssets, setLoadingAssets] = useState(true);
+  const [showNews, setShowNews] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
+        // Check if news has been shown in this session
+        const newsShown = sessionStorage.getItem('news_shown');
+        if (!newsShown) {
+          setShowNews(true);
+          sessionStorage.setItem('news_shown', 'true');
+        }
+
         setCheckingProfile(true);
         try {
           const path = `users/${user.uid}`;
@@ -305,6 +320,198 @@ export default function App() {
     }
   }, []);
 
+  const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
+  const [isInitialLoadingPrices, setIsInitialLoadingPrices] = useState(true);
+  const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
+  const checkedTickers = useRef<Set<string>>(new Set());
+  const dividendsRef = useRef(dividends);
+
+  useEffect(() => {
+    dividendsRef.current = dividends;
+  }, [dividends]);
+
+  const updatePrices = useCallback(async (force = false) => {
+    if (!assets || assets.length === 0) {
+      setIsInitialLoadingPrices(false);
+      return;
+    }
+
+    if (isUpdatingPrices) return;
+
+    const CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours
+    const now = Date.now();
+    const currentMonth = format(new Date(), 'yyyy-MM');
+
+    if (force) {
+      checkedTickers.current.clear();
+    }
+
+    const tickersToUpdate = assets
+      .map(a => a.ticker.toUpperCase())
+      .filter(ticker => {
+        if (checkedTickers.current.has(ticker)) return false;
+        return true;
+      });
+
+    if (tickersToUpdate.length === 0) {
+      setIsInitialLoadingPrices(false);
+      return;
+    }
+
+    setIsUpdatingPrices(true);
+    try {
+      const staleTickers: string[] = [];
+      const currentPrices = { ...marketPrices };
+
+      for (const ticker of tickersToUpdate) {
+        const priceDoc = await getDoc(doc(db, 'market_prices', ticker));
+        const docData = priceDoc.data();
+        
+        // Check if price is stale
+        const isPriceStale = force || !docData || (now - (docData.updatedAt || 0) > CACHE_DURATION);
+        
+        // Check if dividend info is stale for the current month
+        const nextDividendCheck = docData?.nextDividendCheckDate ? new Date(docData.nextDividendCheckDate).getTime() : 0;
+        const isDividendStale = force || !docData || 
+                                docData.dividendMonth !== currentMonth || 
+                                (!docData.dividendAnnounced && now >= nextDividendCheck);
+        
+        if (isPriceStale || isDividendStale) {
+          staleTickers.push(ticker);
+        }
+        
+        if (docData) {
+          currentPrices[ticker] = docData.price;
+          checkedTickers.current.add(ticker);
+
+          // If dividend was already announced and stored, but not in user's dividends, add it
+          if (docData.dividendMonth === currentMonth && docData.dividendAnnounced && docData.dividendValue > 0 && docData.dividendPaymentDate) {
+            const userHasDividend = dividendsRef.current.some(d => 
+              d.ticker === ticker && d.month === currentMonth
+            );
+
+            if (!userHasDividend) {
+              const totalQuantity = assets.filter(a => a.ticker === ticker).reduce((sum, a) => sum + a.quantity, 0);
+              if (totalQuantity > 0) {
+                const dividendData: Omit<Dividend, 'id'> = {
+                  uid: user.uid,
+                  ticker: ticker,
+                  date: docData.dividendPaymentDate,
+                  month: currentMonth,
+                  quantity: totalQuantity,
+                  valuePerShare: docData.dividendValue,
+                  total: totalQuantity * docData.dividendValue
+                };
+                addDoc(collection(db, 'dividends'), dividendData).catch(err => 
+                  console.error(`Error creating dividend for ${ticker}:`, err)
+                );
+              }
+            }
+          }
+        }
+      }
+
+      setMarketPrices(currentPrices);
+      setIsInitialLoadingPrices(false);
+
+      if (staleTickers.length > 0) {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        
+        const prompt = `Hoje é ${new Date().toLocaleDateString('pt-BR')}.
+        Pesquise na internet (StatusInvest, Infomoney, B3) e retorne o preço ATUAL de fechamento ou cotação em tempo real e informações de dividendos para os seguintes ativos brasileiros (B3): ${staleTickers.join(', ')}.
+        
+        Para dividendos:
+        1. Considere apenas proventos anunciados com data de pagamento ou "data com" no mês de ${currentMonth}.
+        2. Se um dividendo foi anunciado para este mês, retorne dividendAnnounced como true, o valor por cota (dividendValue) e a data de pagamento (dividendPaymentDate).
+        3. Se ainda não houve anúncio para este mês, retorne dividendAnnounced como false.
+        4. IMPORTANTE: O valor do dividendo (dividendValue) DEVE ter até 4 casas decimais de precisão (ex: 0.0836).
+        5. Verifique se houve desdobramentos (splits) recentes para garantir que o preço e o dividendo estejam na base correta (ex: ALZR11 agora custa por volta de R$ 10-11 após o desdobramento).
+
+        Retorne APENAS um JSON no formato:
+        {
+          "TICKER": { 
+            "price": 0.00, 
+            "dividendAnnounced": true, 
+            "dividendValue": 0.0000, 
+            "dividendPaymentDate": "YYYY-MM-DD",
+            "nextDividendCheckDate": "YYYY-MM-DDTHH:MM:SSZ"
+          }
+        }`;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config: { 
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json" 
+          }
+        });
+
+        const result = JSON.parse(response.text || '{}');
+        
+        if (result) {
+          for (const ticker of staleTickers) {
+            const data = result[ticker] || result[ticker.replace('.SA', '')];
+            if (data) {
+              const docData = {
+                price: data.price,
+                dividendAnnounced: data.dividendAnnounced || false,
+                dividendValue: data.dividendValue || 0,
+                dividendPaymentDate: data.dividendPaymentDate || null,
+                dividendMonth: currentMonth,
+                nextDividendCheckDate: data.nextDividendCheckDate || new Date(now + 24 * 60 * 60 * 1000).toISOString(),
+                updatedAt: now
+              };
+              currentPrices[ticker] = data.price;
+              checkedTickers.current.add(ticker);
+
+              if (docData.dividendAnnounced && docData.dividendValue > 0 && docData.dividendPaymentDate) {
+                const userHasDividend = dividendsRef.current.some(d => 
+                  d.ticker === ticker && d.month === currentMonth
+                );
+
+                if (!userHasDividend) {
+                  const totalQuantity = assets.filter(a => a.ticker === ticker).reduce((sum, a) => sum + a.quantity, 0);
+                  if (totalQuantity > 0) {
+                    const dividendData: Omit<Dividend, 'id'> = {
+                      uid: user.uid,
+                      ticker: ticker,
+                      date: docData.dividendPaymentDate,
+                      month: currentMonth,
+                      quantity: totalQuantity,
+                      valuePerShare: docData.dividendValue,
+                      total: totalQuantity * docData.dividendValue
+                    };
+                    addDoc(collection(db, 'dividends'), dividendData).catch(err => 
+                      console.error(`Error creating dividend for ${ticker}:`, err)
+                    );
+                  }
+                }
+              }
+
+              try {
+                await setDoc(doc(db, 'market_prices', ticker), docData, { merge: true });
+              } catch (err) {
+                console.error(`Error updating market_prices for ${ticker}:`, err);
+              }
+            }
+          }
+          setMarketPrices({ ...currentPrices });
+        }
+      }
+    } catch (err) {
+      console.error("Error updating prices:", err);
+    } finally {
+      setIsUpdatingPrices(false);
+    }
+  }, [assets, user, marketPrices]);
+
+  useEffect(() => {
+    if (activeTab === 'dashboard' || activeTab === 'investments') {
+      updatePrices();
+    }
+  }, [assets, activeTab, updatePrices]);
+
   if (loading || checkingProfile) {
     return (
       <div className="min-h-screen bg-stone-50 dark:bg-stone-950 flex items-center justify-center transition-colors">
@@ -385,6 +592,7 @@ export default function App() {
       <AnimatePresence>
         {(isMobileMenuOpen || window.innerWidth >= 768) && (
           <motion.aside 
+            key="sidebar"
             initial={window.innerWidth < 768 ? { x: -300, opacity: 0 } : false}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: -300, opacity: 0 }}
@@ -466,6 +674,18 @@ export default function App() {
                   active={activeTab === 'investments'} 
                   onClick={() => { setActiveTab('investments'); setIsMobileMenuOpen(false); }} 
                 />
+                {/* <NavItem 
+                  icon={<FileSpreadsheet className="w-5 h-5" />} 
+                  label="Importar" 
+                  active={activeTab === 'import'} 
+                  onClick={() => { setActiveTab('import'); setIsMobileMenuOpen(false); }} 
+                /> */}
+                <NavItem 
+                  icon={<Newspaper className="w-5 h-5" />} 
+                  label="Notícias" 
+                  active={showNews} 
+                  onClick={() => { setShowNews(true); setIsMobileMenuOpen(false); }} 
+                />
               </nav>
 
             <div className="pt-6 border-t border-stone-100 dark:border-stone-800">
@@ -517,8 +737,12 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 p-4 md:p-8 overflow-y-auto h-[calc(100vh-73px)] md:h-screen">
         <AnimatePresence mode="wait">
+          {showNews && (
+            <NewsCarousel key="news-carousel" onClose={() => setShowNews(false)} />
+          )}
           {activeTab === 'dashboard' && (
             <Dashboard 
+              key="dashboard"
               transactions={transactions} 
               goals={goals} 
               reminders={reminders} 
@@ -528,16 +752,27 @@ export default function App() {
             />
           )}
           {activeTab === 'transactions' && (
-            <Transactions transactions={transactions} user={user} isLoading={loadingTransactions} />
+            <Transactions key="transactions" transactions={transactions} user={user} isLoading={loadingTransactions} />
           )}
           {activeTab === 'goals' && (
-            <Goals goals={goals} user={user} />
+            <Goals key="goals" goals={goals} user={user} />
           )}
           {activeTab === 'reminders' && (
-            <Reminders reminders={reminders} user={user} />
+            <Reminders key="reminders" reminders={reminders} user={user} />
           )}
           {activeTab === 'investments' && (
-            <Investments assets={assets} dividends={dividends} user={user} isLoading={loadingAssets} />
+            <Investments 
+              key="investments" 
+              assets={assets} 
+              dividends={dividends} 
+              user={user} 
+              isLoading={loadingAssets}
+              marketPrices={marketPrices}
+              isUpdatingPrices={isUpdatingPrices}
+              isInitialLoadingPrices={isInitialLoadingPrices}
+              checkedTickers={checkedTickers}
+              updatePrices={updatePrices}
+            />
           )}
         </AnimatePresence>
       </main>
@@ -763,7 +998,7 @@ function ProfileSetup({ user, onComplete, initialProfile, onCancel }: {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1004,7 +1239,7 @@ function Dashboard({ transactions, goals, reminders, dividends, onNavigate, them
                 />
                 <Bar dataKey="value" radius={[8, 8, 0, 0]} barSize={60}>
                   {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
+                    <Cell key={`bar-cell-${index}`} fill={entry.color} />
                   ))}
                 </Bar>
               </BarChart>
@@ -1028,7 +1263,7 @@ function Dashboard({ transactions, goals, reminders, dividends, onNavigate, them
                     dataKey="value"
                   >
                     {categoryData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      <Cell key={`pie-cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
                   <Tooltip 
@@ -1264,8 +1499,9 @@ function ConfirmDialog({
   return createPortal(
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+        <div key="confirm-dialog-overlay" className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
           <motion.div 
+            key="confirm-dialog-content"
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -1410,6 +1646,7 @@ function Transactions({ transactions, user, isLoading }: { transactions: Transac
       <AnimatePresence>
         {showSuccess && (
           <motion.div 
+            key="success-toast"
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 50 }}
@@ -1569,8 +1806,9 @@ function Transactions({ transactions, user, isLoading }: { transactions: Transac
 
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+          <div key="transaction-modal-overlay" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
             <motion.div 
+              key="transaction-modal-content"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
@@ -1812,8 +2050,14 @@ function Goals({ goals, user }: { goals: Goal[], user: User }) {
 
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden transition-colors">
+          <div key="goal-modal-overlay" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+            <motion.div 
+              key="goal-modal-content"
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }} 
+              className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden transition-colors"
+            >
               <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
                 <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50">{editingId ? 'Editar Meta' : 'Nova Meta'}</h3>
                 <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-all"><X className="w-5 h-5 text-stone-500 dark:text-stone-400" /></button>
@@ -1877,9 +2121,10 @@ function NotificationPanel({
   return (
     <AnimatePresence>
       {isOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={onClose} />
+        <div key="notification-panel-wrapper">
+          <div key="notification-panel-overlay" className="fixed inset-0 z-40" onClick={onClose} />
           <motion.div 
+            key="notification-panel-content"
             initial={{ opacity: 0, y: 10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -1953,7 +2198,7 @@ function NotificationPanel({
               )}
             </div>
           </motion.div>
-        </>
+        </div>
       )}
     </AnimatePresence>
   );
@@ -2138,7 +2383,27 @@ function Reminders({ reminders, user }: { reminders: Reminder[], user: User }) {
   );
 }
 
-function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], dividends: Dividend[], user: User, isLoading?: boolean }) {
+function Investments({ 
+  assets, 
+  dividends, 
+  user, 
+  isLoading,
+  marketPrices,
+  isUpdatingPrices,
+  isInitialLoadingPrices,
+  checkedTickers,
+  updatePrices
+}: { 
+  assets: Asset[], 
+  dividends: Dividend[], 
+  user: User, 
+  isLoading?: boolean,
+  marketPrices: Record<string, number>,
+  isUpdatingPrices: boolean,
+  isInitialLoadingPrices: boolean,
+  checkedTickers: React.MutableRefObject<Set<string>>,
+  updatePrices: (force?: boolean) => Promise<void>
+}) {
   const [activeSubTab, setActiveSubTab] = useState<'portfolio' | 'dividends'>('dividends');
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
 
@@ -2149,7 +2414,6 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
   const [formData, setFormData] = useState({
     ticker: '',
     quantity: 0,
-    averagePrice: 0,
     type: 'Ação' as Asset['type']
   });
 
@@ -2230,7 +2494,6 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
       setFormData({
         ticker: asset.ticker,
         quantity: asset.quantity,
-        averagePrice: asset.averagePrice || 0,
         type: asset.type
       });
     } else {
@@ -2238,7 +2501,6 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
       setFormData({
         ticker: '',
         quantity: 0,
-        averagePrice: 0,
         type: 'Ação'
       });
     }
@@ -2253,7 +2515,6 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
       uid: user.uid,
       ticker: formData.ticker.toUpperCase(),
       quantity: formData.quantity,
-      averagePrice: formData.averagePrice,
       type: formData.type
     };
 
@@ -2280,7 +2541,7 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
     }
   };
 
-  const totalInvested = assets.reduce((acc, asset) => acc + (asset.quantity * (asset.averagePrice || 0)), 0);
+  const currentBalance = assets.reduce((acc, asset) => acc + (asset.quantity * (marketPrices[asset.ticker.toUpperCase()] || 0)), 0);
 
   const monthDividends = dividends.filter(d => d.month === selectedMonth);
   const totalMonthDividends = monthDividends.reduce((acc, d) => acc + d.total, 0);
@@ -2330,7 +2591,14 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
 
       {activeSubTab === 'portfolio' ? (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-          <div className="flex justify-end">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              {isUpdatingPrices && (
+                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider animate-pulse flex items-center gap-2">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Atualizando cotações...
+                </span>
+              )}
+            </div>
             <button onClick={() => handleOpenModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
               <Plus className="w-5 h-5" /> Novo Ativo
             </button>
@@ -2338,12 +2606,20 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
           <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
             <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
               <div className="flex items-center gap-4 mb-4">
-                <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center">
-                  <Wallet className="w-6 h-6" />
+                <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center">
+                  <TrendingUp className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Total Investido</p>
-                  <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">{formatCurrency(totalInvested)}</h3>
+                  <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Saldo Atual</p>
+                  <div className="flex items-baseline gap-2">
+                    <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">
+                      {isUpdatingPrices ? (
+                        <div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-32"></div>
+                      ) : (
+                        formatCurrency(currentBalance)
+                      )}
+                    </h3>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2357,29 +2633,38 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                     <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
                     <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Tipo</th>
                     <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Quantidade</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Preço Médio</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Preço Atual</th>
+                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Saldo Atual</th>
                     <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
                   {isLoading ? (
                     Array.from({ length: 3 }).map((_, i) => (
-                      <tr key={i} className="border-b border-stone-50 dark:border-stone-800/50">
+                      <tr key={`asset-skeleton-${i}`} className="border-b border-stone-50 dark:border-stone-800/50">
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
+                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
                         <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
                       </tr>
                     ))
                   ) : assets.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="p-8 text-center text-stone-500 dark:text-stone-400">
+                      <td colSpan={6} className="p-8 text-center text-stone-500 dark:text-stone-400">
                         Nenhum ativo cadastrado.
                       </td>
                     </tr>
                   ) : (
-                    assets.map((asset) => (
+                    assets.map((asset) => {
+                      const ticker = asset.ticker.toUpperCase();
+                      const currentPrice = marketPrices[ticker] || 0;
+                      const currentBalance = currentPrice * asset.quantity;
+                      const isUpdating = isUpdatingPrices && !(ticker in marketPrices);
+                      const isInitialLoading = isInitialLoadingPrices && !(ticker in marketPrices);
+                      
+                      return (
                       <tr key={asset.id} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
                         <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{asset.ticker}</td>
                         <td className="p-4">
@@ -2388,7 +2673,36 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                           </span>
                         </td>
                         <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{asset.quantity}</td>
-                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{formatCurrency(asset.averagePrice || 0)}</td>
+                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">
+                          {isInitialLoading ? (
+                            <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div>
+                          ) : currentPrice > 0 ? (
+                            <div className="flex flex-col items-end">
+                              <div className="flex items-center gap-1">
+                                <span>{formatCurrency(currentPrice)}</span>
+                                {isUpdatingPrices && (ticker in marketPrices) && checkedTickers.current.has(ticker) && (
+                                  <RefreshCw className="w-3 h-3 text-stone-400 animate-spin" />
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-end gap-1">
+                              <span className="text-stone-400 text-sm italic">N/A</span>
+                              {isUpdatingPrices && (ticker in marketPrices) && checkedTickers.current.has(ticker) && (
+                                <RefreshCw className="w-3 h-3 text-stone-400 animate-spin" />
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-4 text-right font-bold text-stone-900 dark:text-stone-50">
+                          {isInitialLoading ? (
+                            <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div>
+                          ) : currentBalance > 0 ? (
+                            formatCurrency(currentBalance)
+                          ) : (
+                            <span className="text-stone-400 text-sm italic">N/A</span>
+                          )}
+                        </td>
                         <td className="p-4">
                           <div className="flex items-center justify-center gap-2">
                             <button 
@@ -2408,7 +2722,7 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                           </div>
                         </td>
                       </tr>
-                    ))
+                    )})
                   )}
                 </tbody>
               </table>
@@ -2417,8 +2731,16 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
         </motion.div>
       ) : (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col items-center md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-4 order-2 md:order-1">
+              {isUpdatingPrices && (
+                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider animate-pulse flex items-center gap-2">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Atualizando...
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 order-1 md:order-2">
               <button 
                 onClick={() => {
                   const d = parseISO(`${selectedMonth}-01`);
@@ -2446,9 +2768,6 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                 <ArrowRight className="w-5 h-5" />
               </button>
             </div>
-            <button onClick={() => handleOpenDividendModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
-              <Plus className="w-5 h-5" /> Novo Lançamento
-            </button>
           </div>
 
           <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
@@ -2479,7 +2798,7 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                 <tbody>
                   {isLoading ? (
                     Array.from({ length: 3 }).map((_, i) => (
-                      <tr key={i} className="border-b border-stone-50 dark:border-stone-800/50">
+                      <tr key={`dividend-skeleton-${i}`} className="border-b border-stone-50 dark:border-stone-800/50">
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
                         <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
@@ -2532,8 +2851,14 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
 
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800">
+          <div key="asset-modal-overlay" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+            <motion.div 
+              key="asset-modal-content"
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }} 
+              className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800"
+            >
               <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
                 <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50">{editingId ? 'Editar Ativo' : 'Novo Ativo'}</h3>
                 <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-all"><X className="w-5 h-5 text-stone-500 dark:text-stone-400" /></button>
@@ -2549,17 +2874,10 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
                     {types.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Quantidade</label>
                     <input type="number" min="0" step="0.01" required value={formData.quantity || ''} onChange={(e) => setFormData({ ...formData, quantity: parseFloat(e.target.value) || 0 })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Preço Médio</label>
-                    <CurrencyInput 
-                      value={formData.averagePrice} 
-                      onChange={(val) => setFormData({ ...formData, averagePrice: val })} 
-                    />
                   </div>
                 </div>
                 <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-emerald-100 dark:shadow-none mt-4">
@@ -2571,8 +2889,14 @@ function Investments({ assets, dividends, user, isLoading }: { assets: Asset[], 
         )}
 
         {isDividendModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800">
+          <div key="dividend-modal-overlay" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-sm">
+            <motion.div 
+              key="dividend-modal-content"
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }} 
+              className="bg-white dark:bg-stone-900 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-transparent dark:border-stone-800"
+            >
               <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
                 <h3 className="text-xl font-bold text-stone-900 dark:text-stone-50">{dividendEditingId ? 'Editar Provento' : 'Novo Provento'}</h3>
                 <button onClick={() => setIsDividendModalOpen(false)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-all"><X className="w-5 h-5 text-stone-500 dark:text-stone-400" /></button>

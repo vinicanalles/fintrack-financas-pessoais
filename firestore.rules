@@ -50,7 +50,6 @@ service cloud.firestore {
     //   - uid: string (required, immutable)
     //   - ticker: string (required, 1-20 chars)
     //   - quantity: number (required, positive)
-    //   - averagePrice: number (optional, positive)
     //   - type: string (required, 'Ação' | 'FII' | 'Renda Fixa' | 'Cripto' | 'Outros')
     //
     // Collection: notifications
@@ -73,6 +72,12 @@ service cloud.firestore {
     //   - valuePerShare: number (required, positive or zero)
     //   - total: number (required, positive or zero)
     //
+    // Collection: system_news
+    // Document ID: latest
+    // Fields:
+    //   - items: list (required) - Array of news objects
+    //   - updatedAt: string (required, ISO 8601)
+    //
     // ===============================================================
 
     // Helper Functions
@@ -84,14 +89,20 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
     function isDocOwner() {
       return isAuthenticated() && request.auth.uid == resource.data.uid;
     }
 
     function isAdmin() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' || 
-         (request.auth.token.email == "vinicanalles@gmail.com" && request.auth.token.email_verified == true));
+        ((('email' in request.auth.token) && request.auth.token.email == "vinicanalles@gmail.com" && ('email_verified' in request.auth.token) && request.auth.token.email_verified == true) || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          'role' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
     }
 
     function uidUnchanged() {
@@ -158,11 +169,10 @@ service cloud.firestore {
     }
 
     function isValidAsset(data) {
-      return data.keys().hasOnly(['uid', 'ticker', 'quantity', 'averagePrice', 'type']) &&
+      return data.keys().hasOnly(['uid', 'ticker', 'quantity', 'type']) &&
              data.uid == request.auth.uid &&
              data.ticker is string && data.ticker.size() > 0 && data.ticker.size() <= 20 &&
              data.quantity is number && data.quantity >= 0 &&
-             (!('averagePrice' in data) || (data.averagePrice is number && data.averagePrice >= 0)) &&
              data.type in ['Ação', 'FII', 'Renda Fixa', 'Cripto', 'Outros'];
     }
 
@@ -186,6 +196,12 @@ service cloud.firestore {
              data.quantity is number && data.quantity >= 0 &&
              data.valuePerShare is number && data.valuePerShare >= 0 &&
              data.total is number && data.total >= 0;
+    }
+
+    function isValidNewsFeed(data) {
+      return data.keys().hasOnly(['items', 'updatedAt']) &&
+             data.items is list &&
+             isValidDateString(data.updatedAt);
     }
 
     // Rules
@@ -237,6 +253,17 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidNotification(request.resource.data);
       allow update: if (isDocOwner() && isValidNotification(request.resource.data) && uidNotModified()) || isAdmin();
       allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /system_news/latest {
+      allow read: if isAuthenticated();
+      // Allow admins to write anything, and allow authenticated users to write if they are providing valid news data
+      allow write: if isAdmin() || (isAuthenticated() && hasOnlyAllowedFields(['items', 'updatedAt']) && request.resource.data.items is list);
+    }
+    
+    match /market_prices/{ticker} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || (isAuthenticated() && hasOnlyAllowedFields(['price', 'updatedAt', 'dividendMonth', 'dividendAnnounced', 'dividendValue', 'dividendPaymentDate', 'nextDividendCheckDate']));
     }
     
     match /test/connection {

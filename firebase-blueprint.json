@@ -64,7 +64,6 @@
         "uid": { "type": "string" },
         "ticker": { "type": "string" },
         "quantity": { "type": "number" },
-        "averagePrice": { "type": "number" },
         "type": { "type": "string", "enum": ["Ação", "FII", "Renda Fixa", "Cripto", "Outros"] }
       },
       "required": ["uid", "ticker", "quantity", "type"]
@@ -98,9 +97,35 @@
         "total": { "type": "number" }
       },
       "required": ["uid", "ticker", "date", "month", "quantity", "valuePerShare", "total"]
+    },
+    "NewsFeed": {
+      "title": "News Feed",
+      "description": "Global news feed cached from Gemini.",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "summary": { "type": "string" },
+              "source": { "type": "string" },
+              "category": { "type": "string" },
+              "image": { "type": "string" }
+            }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["items", "updatedAt"]
     }
   },
   "firestore": {
+    "/system_news/latest": {
+      "schema": "NewsFeed",
+      "description": "Global news cache"
+    },
     "/users/{userId}": {
       "schema": "UserProfile",
       "description": "User profile document"
