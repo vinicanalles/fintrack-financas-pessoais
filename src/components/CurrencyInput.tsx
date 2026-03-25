@@ -8,9 +8,10 @@ interface CurrencyInputProps {
   placeholder?: string;
   required?: boolean;
   decimals?: number;
+  disabled?: boolean;
 }
 
-export function CurrencyInput({ value, onChange, className, placeholder, required, decimals = 2 }: CurrencyInputProps) {
+export function CurrencyInput({ value, onChange, className, placeholder, required, decimals = 2, disabled }: CurrencyInputProps) {
   const [displayValue, setDisplayValue] = useState('');
 
   const format = (val: number) => {
@@ -48,8 +49,10 @@ export function CurrencyInput({ value, onChange, className, placeholder, require
       type="text"
       value={displayValue}
       onChange={handleChange}
+      disabled={disabled}
       className={cn(
         "w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-stone-900 dark:text-stone-50",
+        disabled && "opacity-50 cursor-not-allowed",
         className
       )}
       placeholder={placeholder || "R$ 0,00"}

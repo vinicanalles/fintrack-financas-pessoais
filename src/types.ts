@@ -53,7 +53,6 @@ export interface Asset {
   uid: string;
   ticker: string;
   quantity: number;
-  averagePrice?: number;
   type: 'Ação' | 'FII' | 'Renda Fixa' | 'Cripto' | 'Outros';
 }
 

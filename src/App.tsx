@@ -321,6 +321,7 @@ export default function App() {
   }, []);
 
   const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
+  const [updatingTickers, setUpdatingTickers] = useState<Set<string>>(new Set());
   const [isInitialLoadingPrices, setIsInitialLoadingPrices] = useState(true);
   const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
   const checkedTickers = useRef<Set<string>>(new Set());
@@ -359,6 +360,7 @@ export default function App() {
     }
 
     setIsUpdatingPrices(true);
+    setUpdatingTickers(new Set(tickersToUpdate));
     try {
       const staleTickers: string[] = [];
       const currentPrices = { ...marketPrices };
@@ -541,6 +543,7 @@ export default function App() {
       console.error("Error updating prices:", err);
     } finally {
       setIsUpdatingPrices(false);
+      setUpdatingTickers(new Set());
     }
   }, [assets, user, marketPrices]);
 
@@ -807,6 +810,7 @@ export default function App() {
               isLoading={loadingAssets}
               marketPrices={marketPrices}
               isUpdatingPrices={isUpdatingPrices}
+              updatingTickers={updatingTickers}
               isInitialLoadingPrices={isInitialLoadingPrices}
               checkedTickers={checkedTickers}
               updatePrices={updatePrices}
@@ -2428,6 +2432,7 @@ function Investments({
   isLoading,
   marketPrices,
   isUpdatingPrices,
+  updatingTickers,
   isInitialLoadingPrices,
   checkedTickers,
   updatePrices
@@ -2438,11 +2443,11 @@ function Investments({
   isLoading?: boolean,
   marketPrices: Record<string, number>,
   isUpdatingPrices: boolean,
+  updatingTickers: Set<string>,
   isInitialLoadingPrices: boolean,
   checkedTickers: React.MutableRefObject<Set<string>>,
   updatePrices: (force?: boolean) => Promise<void>
 }) {
-  const [activeSubTab, setActiveSubTab] = useState<'portfolio' | 'dividends'>('dividends');
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
 
   // Asset State
@@ -2565,7 +2570,7 @@ function Investments({
       setIsModalOpen(false);
       setEditingId(null);
     } catch (error) {
-      console.error('Error saving asset:', error);
+      handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, editingId ? `assets/${editingId}` : 'assets');
     }
   };
 
@@ -2602,290 +2607,258 @@ function Investments({
       />
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-stone-900 dark:text-stone-50">Investimentos</h2>
-          <p className="text-stone-500 dark:text-stone-400">Acompanhe seus ativos e dividendos</p>
+          <h2 className="text-2xl font-bold text-stone-900 dark:text-stone-50">Minha Carteira</h2>
+          <p className="text-stone-500 dark:text-stone-400">Acompanhe seus ativos e proventos mensais</p>
         </div>
-        <div className="flex w-full md:w-auto bg-stone-100 dark:bg-stone-800 p-1 rounded-xl">
+        <div className="flex items-center gap-2">
           <button 
-            onClick={() => setActiveSubTab('dividends')}
-            className={cn(
-              "flex-1 md:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all",
-              activeSubTab === 'dividends' ? "bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-50 shadow-sm" : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
-            )}
+            onClick={() => {
+              const d = parseISO(`${selectedMonth}-01`);
+              d.setMonth(d.getMonth() - 1);
+              setSelectedMonth(format(d, 'yyyy-MM'));
+            }}
+            className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
           >
-            Proventos (Mensal)
+            <ChevronLeft className="w-5 h-5" />
           </button>
+          <input 
+            type="month" 
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            className="px-4 py-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl font-bold text-stone-900 dark:text-stone-50 outline-none focus:ring-2 focus:ring-emerald-500"
+          />
           <button 
-            onClick={() => setActiveSubTab('portfolio')}
-            className={cn(
-              "flex-1 md:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all",
-              activeSubTab === 'portfolio' ? "bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-50 shadow-sm" : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
-            )}
+            onClick={() => {
+              const d = parseISO(`${selectedMonth}-01`);
+              d.setMonth(d.getMonth() + 1);
+              setSelectedMonth(format(d, 'yyyy-MM'));
+            }}
+            className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
           >
-            Minha Carteira
+            <ArrowRight className="w-5 h-5" />
           </button>
         </div>
       </header>
 
-      {activeSubTab === 'portfolio' ? (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              {isUpdatingPrices && (
-                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider animate-pulse flex items-center gap-2">
-                  <RefreshCw className="w-3 h-3 animate-spin" /> Atualizando cotações...
-                </span>
-              )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center">
+              <TrendingUp className="w-6 h-6" />
             </div>
-            <button onClick={() => handleOpenModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
+            <div>
+              <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Saldo Atual</p>
+              <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">
+                {isUpdatingPrices ? (
+                  <div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-32"></div>
+                ) : (
+                  formatCurrency(currentBalance)
+                )}
+              </h3>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 rounded-2xl flex items-center justify-center">
+              <Receipt className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Proventos ({format(parseISO(`${selectedMonth}-01`), 'MMMM', { locale: ptBR })})</p>
+              <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">{formatCurrency(totalMonthDividends)}</h3>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <button onClick={() => handleOpenModal()} className="bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-900 dark:text-stone-50 font-bold py-3 px-6 rounded-2xl transition-all flex items-center gap-2">
               <Plus className="w-5 h-5" /> Novo Ativo
             </button>
+            {isUpdatingPrices && (
+              <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider animate-pulse flex items-center gap-2">
+                <RefreshCw className="w-3 h-3 animate-spin" /> Atualizando cotações...
+              </span>
+            )}
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
-            <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
-              <div className="flex items-center gap-4 mb-4">
-                <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center">
-                  <TrendingUp className="w-6 h-6" />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Saldo Atual</p>
-                  <div className="flex items-baseline gap-2">
-                    <h3 className="text-2xl font-black text-stone-900 dark:text-stone-50">
-                      {isUpdatingPrices ? (
-                        <div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-32"></div>
-                      ) : (
-                        formatCurrency(currentBalance)
-                      )}
-                    </h3>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <button onClick={() => handleOpenDividendModal()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-2xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none">
+            <Plus className="w-5 h-5" /> Novo Provento
+          </button>
+        </div>
 
-          <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-stone-100 dark:border-stone-800">
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Tipo</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Quantidade</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Preço Atual</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Saldo Atual</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {isLoading ? (
-                    Array.from({ length: 3 }).map((_, i) => (
-                      <tr key={`asset-skeleton-${i}`} className="border-b border-stone-50 dark:border-stone-800/50">
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
-                      </tr>
-                    ))
-                  ) : assets.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-8 text-center text-stone-500 dark:text-stone-400">
-                        Nenhum ativo cadastrado.
-                      </td>
+        <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-stone-100 dark:border-stone-800">
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Tipo</th>
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Qtd. Atual</th>
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Preço</th>
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Saldo</th>
+                  <th className="p-4 text-xs font-bold text-violet-500 dark:text-violet-400 uppercase tracking-wider text-right">Qtd. Prov.</th>
+                  <th className="p-4 text-xs font-bold text-violet-500 dark:text-violet-400 uppercase tracking-wider text-right">Prov./Cota</th>
+                  <th className="p-4 text-xs font-bold text-violet-500 dark:text-violet-400 uppercase tracking-wider text-right">Total Prov.</th>
+                  <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  Array.from({ length: 3 }).map((_, i) => (
+                    <tr key={`skeleton-${i}`} className="border-b border-stone-50 dark:border-stone-800/50">
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div></td>
+                      <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div></td>
+                      <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
                     </tr>
-                  ) : (
-                    assets.map((asset) => {
-                      const ticker = asset.ticker.toUpperCase();
-                      const currentPrice = marketPrices[ticker] || 0;
-                      const currentBalance = currentPrice * asset.quantity;
-                      const isUpdating = isUpdatingPrices && !(ticker in marketPrices);
-                      const isInitialLoading = isInitialLoadingPrices && !(ticker in marketPrices);
-                      
+                  ))
+                ) : (
+                  (() => {
+                    const monthDivs = dividends.filter(d => d.month === selectedMonth);
+                    const allTickers = Array.from(new Set([
+                      ...assets.map(a => a.ticker.toUpperCase()),
+                      ...monthDivs.map(d => d.ticker.toUpperCase())
+                    ])).sort();
+
+                    if (allTickers.length === 0) {
                       return (
-                      <tr key={asset.id} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
-                        <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{asset.ticker}</td>
-                        <td className="p-4">
-                          <span className="px-2 py-1 bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 rounded-lg text-xs font-bold">
-                            {asset.type}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{asset.quantity}</td>
-                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">
-                          {isInitialLoading ? (
-                            <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div>
-                          ) : currentPrice > 0 ? (
-                            <div className="flex flex-col items-end">
-                              <div className="flex items-center gap-1">
-                                <span>{formatCurrency(currentPrice)}</span>
-                                {isUpdatingPrices && (ticker in marketPrices) && checkedTickers.current.has(ticker) && (
-                                  <RefreshCw className="w-3 h-3 text-stone-400 animate-spin" />
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-end gap-1">
-                              <span className="text-stone-400 text-sm italic">N/A</span>
-                              {isUpdatingPrices && (ticker in marketPrices) && checkedTickers.current.has(ticker) && (
-                                <RefreshCw className="w-3 h-3 text-stone-400 animate-spin" />
+                        <tr>
+                          <td colSpan={8} className="p-8 text-center text-stone-500 dark:text-stone-400">
+                            Nenhum ativo ou provento cadastrado.
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return allTickers.map(ticker => {
+                      const asset = assets.find(a => a.ticker.toUpperCase() === ticker);
+                      const tickerMonthDivs = monthDivs.filter(d => d.ticker.toUpperCase() === ticker);
+                      const totalDiv = tickerMonthDivs.reduce((acc, d) => acc + d.total, 0);
+                      const divPerShare = tickerMonthDivs.length > 0 ? tickerMonthDivs[0].valuePerShare : 0;
+                      const divQuantity = tickerMonthDivs.length > 0 ? tickerMonthDivs[0].quantity : 0;
+                      
+                      const currentPrice = marketPrices[ticker] || 0;
+                      const currentBalance = asset ? currentPrice * asset.quantity : 0;
+                      const isUpdating = updatingTickers.has(ticker);
+                      const isInitialLoading = isInitialLoadingPrices && !(ticker in marketPrices);
+
+                      return (
+                        <tr key={ticker} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
+                          <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{ticker}</td>
+                          <td className="p-4">
+                            <span className="px-2 py-1 bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 rounded-lg text-xs font-bold">
+                              {asset?.type || '-'}
+                            </span>
+                          </td>
+                          <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">
+                            {asset ? asset.quantity : <span className="text-stone-400 italic">0</span>}
+                          </td>
+                          <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">
+                            {asset ? (
+                              isInitialLoading || isUpdating ? (
+                                <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div>
+                              ) : currentPrice > 0 ? (
+                                <div className="flex items-center justify-end gap-1">
+                                  <span>{formatCurrency(currentPrice)}</span>
+                                  {isUpdatingPrices && checkedTickers.current.has(ticker) && (
+                                    <RefreshCw className="w-3 h-3 text-stone-400 animate-spin" />
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-stone-400 italic">N/A</span>
+                              )
+                            ) : '-'}
+                          </td>
+                          <td className="p-4 text-right font-bold text-stone-900 dark:text-stone-50">
+                            {asset ? (
+                              isInitialLoading || isUpdating ? (
+                                <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div>
+                              ) : currentBalance > 0 ? (
+                                formatCurrency(currentBalance)
+                              ) : (
+                                <span className="text-stone-400 italic">N/A</span>
+                              )
+                            ) : '-'}
+                          </td>
+                          <td className="p-4 text-right font-medium text-violet-600 dark:text-violet-400">
+                            {divQuantity > 0 ? divQuantity : '-'}
+                          </td>
+                          <td className="p-4 text-right font-medium text-violet-600 dark:text-violet-400">
+                            {divPerShare > 0 ? formatCurrency(divPerShare, 4) : '-'}
+                          </td>
+                          <td className="p-4 text-right font-bold text-emerald-600 dark:text-emerald-400">
+                            {totalDiv > 0 ? formatCurrency(totalDiv) : '-'}
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center justify-center gap-1">
+                              {asset && (
+                                <button 
+                                  onClick={() => handleOpenModal(asset)}
+                                  className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
+                                  title="Editar Ativo"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                              )}
+                              {tickerMonthDivs.length > 0 ? (
+                                <button 
+                                  onClick={() => handleOpenDividendModal(tickerMonthDivs[0])}
+                                  className="p-2 text-stone-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 rounded-xl transition-all"
+                                  title="Editar Provento"
+                                >
+                                  <Receipt className="w-4 h-4" />
+                                </button>
+                              ) : (
+                                <button 
+                                  onClick={() => {
+                                    setDividendEditingId(null);
+                                    setDividendFormData({
+                                      ticker: ticker,
+                                      date: format(new Date(), 'yyyy-MM-dd'),
+                                      quantity: asset?.quantity || 0,
+                                      valuePerShare: 0
+                                    });
+                                    setIsDividendModalOpen(true);
+                                  }}
+                                  className="p-2 text-stone-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 rounded-xl transition-all"
+                                  title="Lançar Provento"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                </button>
+                              )}
+                              {asset && (
+                                <button 
+                                  onClick={() => asset.id && setItemToDelete(asset.id)}
+                                  className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
+                                  title="Excluir Ativo"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
                               )}
                             </div>
-                          )}
-                        </td>
-                        <td className="p-4 text-right font-bold text-stone-900 dark:text-stone-50">
-                          {isInitialLoading ? (
-                            <div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div>
-                          ) : currentBalance > 0 ? (
-                            formatCurrency(currentBalance)
-                          ) : (
-                            <span className="text-stone-400 text-sm italic">N/A</span>
-                          )}
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center justify-center gap-2">
-                            <button 
-                              onClick={() => handleOpenModal(asset)}
-                              className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
-                              title="Editar"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => asset.id && setItemToDelete(asset.id)}
-                              className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
-                              title="Excluir"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    )})
-                  )}
-                </tbody>
-              </table>
-            </div>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()
+                )}
+              </tbody>
+            </table>
           </div>
-        </motion.div>
-      ) : (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-          <div className="flex flex-col items-center md:flex-row md:items-center justify-between gap-4">
-            <div className="flex items-center gap-4 order-2 md:order-1">
-              {isUpdatingPrices && (
-                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider animate-pulse flex items-center gap-2">
-                  <RefreshCw className="w-3 h-3 animate-spin" /> Atualizando...
-                </span>
-              )}
-            </div>
+        </div>
 
-            <div className="flex items-center gap-2 order-1 md:order-2">
-              <button 
-                onClick={() => {
-                  const d = parseISO(`${selectedMonth}-01`);
-                  d.setMonth(d.getMonth() - 1);
-                  setSelectedMonth(format(d, 'yyyy-MM'));
-                }}
-                className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <input 
-                type="month" 
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="px-4 py-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl font-bold text-stone-900 dark:text-stone-50 outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <button 
-                onClick={() => {
-                  const d = parseISO(`${selectedMonth}-01`);
-                  d.setMonth(d.getMonth() + 1);
-                  setSelectedMonth(format(d, 'yyyy-MM'));
-                }}
-                className="p-2 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl hover:bg-stone-50 dark:hover:bg-stone-800 transition-all text-stone-600 dark:text-stone-300"
-              >
-                <ArrowRight className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center">
-                <Receipt className="w-6 h-6" />
-              </div>
-              <div>
-                <p className="text-sm font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Total Recebido no Mês</p>
-                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(totalMonthDividends)}</h3>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-100 dark:border-stone-800 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-stone-100 dark:border-stone-800">
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Data</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Ativo</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Quantidade</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Valor/Cota</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-right">Total</th>
-                    <th className="p-4 text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider text-center">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {isLoading ? (
-                    Array.from({ length: 3 }).map((_, i) => (
-                      <tr key={`dividend-skeleton-${i}`} className="border-b border-stone-50 dark:border-stone-800/50">
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-12 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-20 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-4 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 ml-auto"></div></td>
-                        <td className="p-4"><div className="h-8 bg-stone-100 dark:bg-stone-800 rounded animate-pulse w-16 mx-auto"></div></td>
-                      </tr>
-                    ))
-                  ) : monthDividends.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-8 text-center text-stone-500 dark:text-stone-400">
-                        Nenhum provento lançado neste mês.
-                      </td>
-                    </tr>
-                  ) : (
-                    monthDividends.map((dividend) => (
-                      <tr key={dividend.id} className="border-b border-stone-50 dark:border-stone-800/50 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors">
-                        <td className="p-4 font-medium text-stone-900 dark:text-stone-50">{format(parseISO(dividend.date), 'dd/MM/yyyy')}</td>
-                        <td className="p-4 font-bold text-stone-900 dark:text-stone-50">{dividend.ticker}</td>
-                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{dividend.quantity}</td>
-                        <td className="p-4 text-right font-medium text-stone-900 dark:text-stone-50">{formatCurrency(dividend.valuePerShare, 4)}</td>
-                        <td className="p-4 text-right font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(dividend.total)}</td>
-                        <td className="p-4">
-                          <div className="flex items-center justify-center gap-2">
-                            <button 
-                              onClick={() => handleOpenDividendModal(dividend)}
-                              className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all"
-                              title="Editar"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => dividend.id && setDividendItemToDelete(dividend.id)}
-                              className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
-                              title="Excluir"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </motion.div>
-      )}
+        <div className="p-4 bg-stone-50 dark:bg-stone-800/50 rounded-2xl border border-stone-100 dark:border-stone-800">
+          <p className="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
+            <span className="font-bold text-emerald-600 dark:text-emerald-400">Dica:</span> Os proventos são calculados com base na sua posição na <span className="font-bold">Data de Corte (Data Com)</span>. Esta é a data limite em que você precisava ter o ativo para ter direito a receber este pagamento.
+          </p>
+        </div>
+      </div>
 
       <AnimatePresence>
         {isModalOpen && (
@@ -2952,8 +2925,9 @@ function Investments({
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Quantidade</label>
+                    <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Cotas com Direito</label>
                     <input type="number" min="0" step="0.01" required value={dividendFormData.quantity || ''} onChange={(e) => setDividendFormData({ ...dividendFormData, quantity: parseFloat(e.target.value) || 0 })} className="w-full px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-stone-900 dark:text-stone-50" />
+                    <p className="text-[10px] text-stone-400">Quantidade que você tinha na Data Com</p>
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider">Valor por Cota</label>

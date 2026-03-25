@@ -48,7 +48,6 @@ export function ImportExport({ user, onComplete }: ImportExportProps) {
   const assetFields = [
     { id: 'ticker', label: 'Ticker', description: 'Código do ativo (ex: PETR4)' },
     { id: 'quantity', label: 'Quantidade', description: 'Número de cotas/ações' },
-    { id: 'averagePrice', label: 'Preço Médio', description: 'Custo médio de aquisição' },
     { id: 'type', label: 'Tipo', description: 'Ação, FII, Renda Fixa, etc.' },
   ];
 
@@ -171,7 +170,6 @@ export function ImportExport({ user, onComplete }: ImportExportProps) {
             uid: user.uid,
             ticker: String(row[mapping['ticker']] || 'UNKNOWN').toUpperCase(),
             quantity: Number(row[mapping['quantity']]) || 0,
-            averagePrice: Number(row[mapping['averagePrice']]) || 0,
             type: (row[mapping['type']] || 'Outros') as any
           };
           await addDoc(collection(db, 'assets'), asset);
