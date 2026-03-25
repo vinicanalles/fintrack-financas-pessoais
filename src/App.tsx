@@ -402,7 +402,26 @@ export default function App() {
                   valuePerShare: docData.dividendValue,
                   total: totalQuantity * docData.dividendValue
                 };
-                addDoc(collection(db, 'dividends'), dividendData).catch(err => 
+                addDoc(collection(db, 'dividends'), dividendData).then(() => {
+                  // Create notification for new dividend
+                  addDoc(collection(db, 'notifications'), {
+                    uid: user.uid,
+                    title: 'Novo Provento Detectado',
+                    message: `Um novo dividendo de ${ticker} foi anunciado: ${formatCurrency(dividendData.total)} com pagamento em ${format(parseISO(dividendData.date), 'dd/MM/yyyy')}.`,
+                    type: 'dividend',
+                    createdAt: new Date().toISOString(),
+                    isRead: false,
+                    relatedId: ticker
+                  });
+
+                  // Browser Notification
+                  if (Notification.permission === 'granted') {
+                    new Notification('FinTrack: Novo Provento', {
+                      body: `${ticker} anunciou ${formatCurrency(dividendData.total)} em dividendos!`,
+                      icon: '/favicon.ico'
+                    });
+                  }
+                }).catch(err => 
                   console.error(`Error creating dividend for ${ticker}:`, err)
                 );
               }
@@ -482,7 +501,26 @@ export default function App() {
                       valuePerShare: docData.dividendValue,
                       total: totalQuantity * docData.dividendValue
                     };
-                    addDoc(collection(db, 'dividends'), dividendData).catch(err => 
+                    addDoc(collection(db, 'dividends'), dividendData).then(() => {
+                      // Create notification for new dividend
+                      addDoc(collection(db, 'notifications'), {
+                        uid: user.uid,
+                        title: 'Novo Provento Detectado',
+                        message: `Um novo dividendo de ${ticker} foi anunciado: ${formatCurrency(dividendData.total)} com pagamento em ${format(parseISO(dividendData.date), 'dd/MM/yyyy')}.`,
+                        type: 'dividend',
+                        createdAt: new Date().toISOString(),
+                        isRead: false,
+                        relatedId: ticker
+                      });
+
+                      // Browser Notification
+                      if (Notification.permission === 'granted') {
+                        new Notification('FinTrack: Novo Provento', {
+                          body: `${ticker} anunciou ${formatCurrency(dividendData.total)} em dividendos!`,
+                          icon: '/favicon.ico'
+                        });
+                      }
+                    }).catch(err => 
                       console.error(`Error creating dividend for ${ticker}:`, err)
                     );
                   }
