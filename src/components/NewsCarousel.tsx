@@ -219,6 +219,21 @@ export function NewsCarousel({ onClose }: NewsCarouselProps) {
     }
   }, [currentIndex]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') {
+        nextStory();
+      } else if (e.key === 'ArrowLeft') {
+        prevStory();
+      } else if (e.key === 'Escape') {
+        onCloseRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [nextStory, prevStory]);
+
   if (news.length === 0 && !loading) {
     onClose();
     return null;
